@@ -1,0 +1,122 @@
+[package]
+name = "nrzx"
+version = "1.0.0"
+edition = "2021"
+description = "nrzX – Coding-Agenten (Claude Code, Codex, Gemini, OpenCode, Kilo Code, Grok) im Browser, verbunden mit nrzGit – komplett in Rust (Rocket, Dioxus, rust-ui)"
+license = "AGPL-3.0-or-later"
+rust-version = "1.85"
+publish = false
+# Die Oberfläche (ui/) ist ein eigenes Cargo-Projekt (WebAssembly) und wird mit scripts/ui.sh gebaut.
+exclude = ["ui/", "data/"]
+
+[[bin]]
+name = "nrzx"
+path = "src/main.rs"
+
+[dependencies]
+# Gemeinsam mit der Oberfläche: alle JSON-Formen der API
+nrzx-shared = { path = "shared" }
+
+# Web
+rocket = { version = "=0.5.1", features = ["secrets", "json"] }
+# Rocket 0.5.1 verlangt nur "^0.5.1" für diese beiden – ohne feste Version zieht
+# Cargo 0.5.2 (hyper 1.x), und Rocket 0.5.1 lässt sich nicht mehr übersetzen.
+rocket_http = "=0.5.1"
+rocket_codegen = "=0.5.1"
+
+# Datenbank: eine SQLite-Datei (Benutzer, Konten, Projekte, Threads, Nachrichten)
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "json"] }
+
+# Laufzeit & Hilfen
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "time", "io-util", "net", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1"
+urlencoding = "2"
+
+# Sicherheit
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+# Markdown (GFM) und Syntaxhervorhebung für Antworten der Agenten und Diffs – reines Rust
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+ammonia = "4"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+
+# HTTP zu nrzGit (API, MCP) – rustls, keine OpenSSL
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# Verbindung zu nrzXMobile (ausgehender WebSocket, auch wss://)
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+
+# Bereich workspace
+# Vorschau-Proxy (eigener HTTP-Server auf preview_port, inkl. WebSocket) – dieselbe hyper-Version wie Rocket 0.5
+hyper = { version = "0.14", default-features = false, features = ["server", "client", "http1", "tcp", "runtime", "stream"] }
+
+# Bereich agents
+# Terminals im Browser (PTY), Docker-CLI und Node.js entpacken (tgz, unter Windows ZIP),
+# Prozessgruppen beenden
+portable-pty = "0.9"
+tar = "0.4"
+flate2 = "1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+libc = "0.2"
+
+# Bereich voice: Spracherkennung (Whisper) lokal in reinem Rust – Modelle lädt nrzX bei Bedarf
+candle-core = { version = "0.11", default-features = false }
+candle-nn = { version = "0.11", default-features = false }
+candle-transformers = { version = "0.11", default-features = false }
+
+# macOS: Rechnen über das Accelerate-Framework (etwa 5× schneller als ohne)
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", default-features = false, features = ["accelerate"] }
+candle-nn = { version = "0.11", default-features = false, features = ["accelerate"] }
+candle-transformers = { version = "0.11", default-features = false, features = ["accelerate"] }
+
+[build-dependencies]
+flate2 = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+nrzx-shared = { path = "shared" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Argon2 und Syntaxhervorhebung sind im Debug-Build sonst sehr langsam
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.syntect]
+opt-level = 3
+
+[profile.dev.package.fancy-regex]
+opt-level = 3
+
+# Spracherkennung ist im Debug-Build sonst unbrauchbar langsam
+[profile.dev.package.candle-core]
+opt-level = 3
+
+[profile.dev.package.candle-nn]
+opt-level = 3
+
+[profile.dev.package.candle-transformers]
+opt-level = 3
+
+[profile.dev.package.gemm]
+opt-level = 3

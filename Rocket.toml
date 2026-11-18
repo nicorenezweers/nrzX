@@ -1,0 +1,18 @@
+# Standardwerte – jede Einstellung lässt sich mit NRZX_<NAME> überschreiben,
+# z. B. NRZX_PORT=9000 oder NRZX_PREVIEW_PORT=0 (Vorschau aus) (siehe src/config.rs).
+[default]
+address = "0.0.0.0"
+port = 9300
+ident = "nrzX"
+data_dir = "./data"
+preview_port = 9301
+limits = { file = "200MiB", data-form = "210MiB", form = "64KiB", json = "8MiB", string = "8MiB" }
+# Sauber beenden bei Ctrl-C und SIGTERM (docker stop): laufende Anfragen abschliessen,
+# dann die Datenbank schliessen.
+shutdown = { ctrlc = true, signals = ["term", "hup"], grace = 5, mercy = 5 }
+
+[debug]
+log_level = "normal"
+
+[release]
+log_level = "critical"

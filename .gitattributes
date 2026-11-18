@@ -1,0 +1,3 @@
+# Immer LF im Arbeitsordner. Die Migrationen (src/migrations.rs) werden über ihre Prüfsumme
+# wiedererkannt: mit CRLF gebaut hielte die App jede schon angewandte Migration für verändert.
+* text=auto eol=lf

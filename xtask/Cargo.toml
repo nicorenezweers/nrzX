@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "1.0.0"
+edition = "2021"
+description = "Bauen und Veröffentlichen von nrzX: Oberfläche, macOS-App mit DMG, Release in nrzGit"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"

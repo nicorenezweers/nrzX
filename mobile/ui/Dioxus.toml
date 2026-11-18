@@ -1,0 +1,19 @@
+[application]
+name = "nrzx-mobile-ui"
+default_platform = "web"
+asset_dir = "assets"
+
+[web.app]
+title = "nrzX Mobile"
+
+[web.resource]
+style = []
+script = []
+
+[web.resource.dev]
+style = []
+script = []
+
+# Beim Entwickeln (dx serve) geht die API an den laufenden Server.
+[[web.proxy]]
+backend = "http://localhost:8470/api/"

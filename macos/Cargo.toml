@@ -1,0 +1,67 @@
+[package]
+name = "nrzx-macos"
+# Gleiche Version wie das Hauptprogramm – scripts/macos.sh prüft das.
+version = "1.0.0"
+edition = "2021"
+description = "nrzX als native macOS-App: eingebetteter Server, WKWebView-Fenster, Menüleiste und automatische Updates aus nrzGit"
+license = "AGPL-3.0-or-later"
+rust-version = "1.85"
+publish = false
+
+[[bin]]
+name = "nrzx-macos"
+path = "src/main.rs"
+
+[dependencies]
+# Der Server läuft im selben Prozess (Bibliothek aus dem Hauptprojekt, Oberfläche eingebettet)
+nrzx = { path = ".." }
+rocket = { version = "=0.5.1", features = ["secrets", "json"] }
+
+# Natives Fenster, WKWebView und Menüleiste
+tao = "0.37"
+wry = { version = "0.57", features = ["devtools"] }
+muda = "0.21"
+# Milchglas hinter der Oberfläche (macOS: Vibrancy, Windows: Acryl bzw. Weichzeichnen)
+window-vibrancy = "0.8"
+rfd = "0.18"
+getrandom = "0.2"
+
+
+# Updates aus den Releases von nrzGit
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Native Mitteilungen (NSUserNotification – funktioniert auch ohne Apple-Signatur)
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserNotification", "NSString", "NSGeometry"] }
+# Lage der Ampel messen (Kopfzeile der Oberfläche danach ausrichten)
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow", "NSView", "NSResponder", "NSButton", "NSControl", "NSToolbar"] }
+# Symbol in der Menüleiste (Threads und Nutzung auf einen Klick)
+# Mikrofon-Recht (AVCaptureDevice) für die Sprachsteuerung „Dieter“
+objc2 = "0.6"
+block2 = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+# Windows-Version: eigenes Acryl ab Windows 11 22H2, davor Weichzeichnen (siehe src/glass.rs)
+windows-version = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.syntect]
+opt-level = 3

@@ -1,0 +1,3 @@
+# `cargo xtask <befehl>` – Bauen und Veröffentlichen in Rust (siehe xtask/src/main.rs)
+[alias]
+xtask = "run --quiet --manifest-path xtask/Cargo.toml --"

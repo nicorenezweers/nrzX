@@ -1,0 +1,11 @@
+[package]
+name = "nrzx-shared"
+version = "1.0.0"
+edition = "2021"
+description = "nrzX – JSON-Formen der API, gemeinsam für Server und Oberfläche"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
