@@ -1,6 +1,6 @@
 [package]
 name = "nrzx-ui"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Oberfläche von nrzX – Dioxus 0.7 (WebAssembly) mit Komponenten von rust-ui"
 license = "AGPL-3.0-or-later"

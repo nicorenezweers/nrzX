@@ -1,6 +1,6 @@
 [package]
 name = "nrzx-shared"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "nrzX – JSON-Formen der API, gemeinsam für Server und Oberfläche"
 license = "AGPL-3.0-or-later"

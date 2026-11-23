@@ -1,6 +1,6 @@
 [package]
 name = "nrzx-mobile-ui"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Oberfläche von nrzXMobile – Dioxus 0.7 (WebAssembly), für das Handy"
 license = "AGPL-3.0-or-later"

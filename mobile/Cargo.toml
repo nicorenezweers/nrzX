@@ -1,6 +1,6 @@
 [package]
 name = "nrzx-mobile"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "nrzXMobile – nrzX für unterwegs: Server auf dem Umbrel, mit dem sich nrzX am PC verbindet"
 license = "AGPL-3.0-or-later"
