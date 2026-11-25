@@ -163,8 +163,8 @@ const CRED_FILES: &[&str] = &[
     ".gemini/oauth_creds.json",
     ".local/share/opencode/auth.json",
     ".kilocode/cli/config.json",
-    ".grok/user-settings.json",
     ".grok/auth.json",
+    ".grok/user-settings.json",
 ];
 
 /// Mit nrzCode verknüpfte Anmeldung abgleichen: je Datei gewinnt die neuere – erneuert eine der

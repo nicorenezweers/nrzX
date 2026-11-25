@@ -6,8 +6,13 @@
 //!   OAuth-Token aus `<home>/.claude/.credentials.json` (5-Stunden-Fenster, Woche, Woche Opus …)
 //! * Codex: letzte `rate_limits` aus den Sitzungsprotokollen des CLIs
 //!   (`<home>/.codex/sessions/**/rollout-*.jsonl`, primäres und sekundäres Fenster)
+//! * Grok CLI: `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` mit der
+//!   Anmeldung aus `<home>/.grok/auth.json` (Wochenpool, je Produkt, Zusatzverbrauch).
+//!   Das ist dieselbe Abfrage wie `/usage` im CLI. Ein API-Schlüssel allein meldet das nicht.
+//!   Abgelaufene Tokens erneuert nrzX nicht – das CLI rotiert sie, ein zweites Erneuern
+//!   würde die Anmeldung ungültig machen.
 //!
-//! Gemini CLI, OpenCode, Kilo Code und Grok CLI melden keine Limits – dort zählt nrzX Läufe,
+//! Gemini CLI, OpenCode und Kilo Code melden keine Limits – dort zählt nrzX Läufe,
 //! Tokens und Kosten selbst. Abfragen beim Anbieter werden zwei Minuten zwischengespeichert.
 
 use super::accounts::{self, AccountRow};
@@ -112,6 +117,10 @@ pub(crate) async fn limits(state: &AppState, r: &AccountRow, refresh: bool) -> (
         AgentKind::Codex => match codex_limits(&home.join(".codex").join("sessions")).await {
             Some((l, at)) => (l, "session".to_string(), String::new(), Some(at)),
             None => (Vec::new(), String::new(), "Noch keine Limits – Codex meldet sie nach dem ersten Lauf.".to_string(), None),
+        },
+        AgentKind::Grok => match grok_limits(&home, r).await {
+            Ok(l) => (l, "api".to_string(), String::new(), Some(now())),
+            Err(e) => (Vec::new(), String::new(), e, None),
         },
         _ => (Vec::new(), String::new(), String::new(), None),
     };
@@ -298,6 +307,216 @@ fn parse_codex(rl: &Value, at: i64) -> Vec<UsageLimit> {
     out
 }
 
+// ------------------------------------------------------------------ Grok CLI
+
+const GROK_BILLING: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+const GROK_BILLING_MONTH: &str = "https://cli-chat-proxy.grok.com/v1/billing";
+
+/// Anmeldung des Grok-CLIs (`~/.grok/auth.json`) und Abfrage des Abo-Verbrauchs.
+async fn grok_limits(home: &Path, r: &AccountRow) -> Result<Vec<UsageLimit>, String> {
+    let path = home.join(".grok").join("auth.json");
+    let raw = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(_) if r.auth_kind == "api_key" => {
+            return Err("API-Schlüssel: keine Abo-Limits. Mit „grok login“ anmelden.".into());
+        }
+        Err(_) => return Err("Nicht angemeldet – keine Limits verfügbar.".into()),
+    };
+    let v: Value = serde_json::from_str(&raw).map_err(|_| "Grok-Anmeldung ist unlesbar.".to_string())?;
+    let token = grok_session(&v)?;
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    let body = grok_get(&http, &token, GROK_BILLING).await?;
+    let mut list = parse_grok(&body);
+    if list.is_empty() {
+        // Ältere Konten: Monatsguthaben ohne Wochenprozent
+        let monthly = grok_get(&http, &token, GROK_BILLING_MONTH).await?;
+        list = parse_grok(&monthly);
+    }
+    if list.is_empty() {
+        return Err("Grok meldet für dieses Konto keine Limits.".into());
+    }
+    Ok(list)
+}
+
+async fn grok_get(http: &reqwest::Client, token: &str, url: &str) -> Result<Value, String> {
+    let resp = http
+        .get(url)
+        .bearer_auth(token)
+        .header("x-xai-token-auth", "xai-grok-cli")
+        .header("Accept", "application/json")
+        .header("User-Agent", "nrzx")
+        .send()
+        .await
+        .map_err(|e| format!("Grok nicht erreichbar: {e}"))?;
+    let status = resp.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err("Anmeldung abgelaufen oder ohne Berechtigung – einmal „grok“ starten.".into());
+    }
+    if !status.is_success() {
+        return Err(format!("Grok antwortet mit {status}."));
+    }
+    resp.json().await.map_err(|_| "Grok antwortet nicht mit Limits.".into())
+}
+
+/// Sitzungs-Token aus `auth.json` (Objekt je Bereich, oder ein einzelner Eintrag).
+/// API-Schlüssel (`xai-…`) gelten hier nicht: die Abrechnung verlangt die Anmeldung des CLIs.
+fn grok_session(v: &Value) -> Result<String, String> {
+    let mut sessions: Vec<(bool, i64, String)> = Vec::new();
+    let mut saw_api = false;
+    let mut consider = |scope: &str, entry: &Value| {
+        let Some(token) = entry
+            .get("key")
+            .or_else(|| entry.get("access_token"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        if scope.contains("api_key") || token.starts_with("xai-") {
+            saw_api = true;
+            return;
+        }
+        let exp = entry.get("expires_at").and_then(Value::as_str).and_then(parse_rfc3339).unwrap_or(0);
+        let fresh = exp == 0 || exp > now();
+        sessions.push((fresh, exp, token.to_string()));
+    };
+    if let Some(obj) = v.as_object() {
+        if obj.contains_key("key") || obj.contains_key("access_token") {
+            consider("", v);
+        } else {
+            for (k, entry) in obj {
+                if entry.is_object() {
+                    consider(k, entry);
+                }
+            }
+        }
+    }
+    if let Some((_, _, token)) = sessions.iter().filter(|s| s.0).max_by_key(|s| s.1) {
+        return Ok(token.clone());
+    }
+    if !sessions.is_empty() {
+        return Err("Anmeldung abgelaufen – einmal „grok“ starten, dann werden die Limits gelesen.".into());
+    }
+    if saw_api {
+        return Err("API-Schlüssel: keine Abo-Limits. Mit „grok login“ anmelden.".into());
+    }
+    Err("Nicht angemeldet – keine Limits verfügbar.".into())
+}
+
+/// `{"config": {"creditUsagePercent": 42.5, "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "…"},
+/// "productUsage": [{"product": "GrokBuild", "usagePercent": 30}], "onDemandCap": {"val": 5000}, …}}`
+fn parse_grok(v: &Value) -> Vec<UsageLimit> {
+    let cfg = v.get("config").filter(|c| c.is_object()).unwrap_or(v);
+    if !cfg.is_object() {
+        return Vec::new();
+    }
+    let period = cfg.get("currentPeriod").filter(|p| p.is_object());
+    let resets_at = period
+        .and_then(|p| p.get("end"))
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339)
+        .or_else(|| cfg.get("billingPeriodEnd").and_then(Value::as_str).and_then(parse_rfc3339));
+    let kind = period.and_then(|p| p.get("type")).and_then(Value::as_str).unwrap_or("");
+    let weekly = kind.contains("WEEK");
+    let mut out = Vec::new();
+    if let Some(used) = cfg.get("creditUsagePercent").and_then(Value::as_f64) {
+        let label = if weekly || kind.is_empty() { "Woche" } else { "Monat" };
+        out.push(UsageLimit { key: "grok".into(), label: label.into(), used_percent: used.clamp(0.0, 100.0), resets_at });
+    } else if let (Some(limit), Some(used)) = (money(cfg.get("monthlyLimit")), money(cfg.get("used"))) {
+        if limit > 0.0 {
+            out.push(UsageLimit {
+                key: "grok".into(),
+                label: "Monat".into(),
+                used_percent: (used / limit * 100.0).clamp(0.0, 100.0),
+                resets_at,
+            });
+        }
+    }
+    if let Some(products) = cfg.get("productUsage").and_then(Value::as_array) {
+        for p in products {
+            let Some(used) = p.get("usagePercent").and_then(Value::as_f64) else { continue };
+            let raw = p.get("product").and_then(Value::as_str).unwrap_or("");
+            let label = grok_product(raw);
+            if label.is_empty() {
+                continue;
+            }
+            // Ein einziges Produkt mit demselben Prozent wie der Pool: der Wochenbalken reicht
+            if out.len() == 1 && out[0].key == "grok" && (out[0].used_percent - used).abs() < 0.05 && products.len() == 1 {
+                continue;
+            }
+            let key = format!("product_{}", raw.to_ascii_lowercase().replace('-', "_"));
+            out.push(UsageLimit { key, label, used_percent: used.clamp(0.0, 100.0), resets_at });
+        }
+    }
+    if out.iter().all(|l| l.key != "grok") {
+        let products: Vec<f64> = out.iter().filter(|l| l.key.starts_with("product_")).map(|l| l.used_percent).collect();
+        if let Some(used) = products.iter().copied().max_by(f64::total_cmp) {
+            // Ein Produkt ist der Pool selbst – kein zweiter, gleicher Balken
+            if products.len() == 1 {
+                out.retain(|l| !l.key.starts_with("product_"));
+            }
+            out.insert(0, UsageLimit { key: "grok".into(), label: if weekly || kind.is_empty() { "Woche" } else { "Monat" }.into(), used_percent: used, resets_at });
+        }
+    }
+    if let (Some(cap), Some(used)) = (money(cfg.get("onDemandCap")), money(cfg.get("onDemandUsed"))) {
+        if cap > 0.0 {
+            out.push(UsageLimit {
+                key: "on_demand".into(),
+                label: format!("Zusatz {} / {}", usd(used), usd(cap)),
+                used_percent: (used / cap * 100.0).clamp(0.0, 100.0),
+                resets_at,
+            });
+        }
+    }
+    out
+}
+
+/// Betrag in US-Cent (`{"val": 5000}` oder eine nackte Zahl).
+fn money(v: Option<&Value>) -> Option<f64> {
+    let v = v?;
+    v.get("val").and_then(Value::as_f64).or_else(|| v.as_f64())
+}
+
+fn usd(cents: f64) -> String {
+    let d = cents / 100.0;
+    if (d - d.round()).abs() < 0.005 {
+        format!("${:.0}", d.round())
+    } else {
+        format!("${d:.2}")
+    }
+}
+
+/// `GrokBuild` / `PRODUCT_GROK_BUILD` → „Grok Build“.
+fn grok_product(name: &str) -> String {
+    let name = name.trim().strip_prefix("PRODUCT_").unwrap_or(name.trim());
+    if name.is_empty() || name.eq_ignore_ascii_case("UNSPECIFIED") {
+        return String::new();
+    }
+    if name.contains('_') {
+        return name
+            .split('_')
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                let mut c = p.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +558,49 @@ mod tests {
         assert_eq!(l[0].label, "5 Stunden");
         assert_eq!(l[0].resets_at, Some(1060));
         assert_eq!(l[1].label, "Woche");
+    }
+
+    #[test]
+    fn grok_picks_the_session_not_the_api_key() {
+        let v = json!({
+            "xai::api_key": {"key": "xai-secret"},
+            "oidc": {"key": "eyJ.old", "expires_at": "2000-01-01T00:00:00Z"},
+            "grok-shell": {"key": "eyJ.live", "refresh_token": "rt", "expires_at": "2099-01-01T00:00:00Z"}
+        });
+        assert_eq!(grok_session(&v).unwrap(), "eyJ.live");
+        assert!(grok_session(&json!({"xai::api_key": {"key": "xai-secret"}})).is_err());
+        assert!(grok_session(&json!({"oidc": {"key": "eyJ.old", "expires_at": "2000-01-01T00:00:00Z"}})).unwrap_err().contains("abgelaufen"));
+    }
+
+    #[test]
+    fn grok_credits() {
+        let v = json!({"config": {
+            "creditUsagePercent": 42.5,
+            "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2026-06-01T00:00:00Z", "end": "2026-06-08T00:00:00Z"},
+            "productUsage": [
+                {"product": "GrokBuild", "usagePercent": 61.25},
+                {"product": "GrokChat", "usagePercent": 7.0},
+                {"product": "PRODUCT_UNSPECIFIED"}
+            ],
+            "onDemandCap": {"val": 5000},
+            "onDemandUsed": {"val": 300}
+        }});
+        let l = parse_grok(&v);
+        assert_eq!(l[0].key, "grok");
+        assert_eq!(l[0].label, "Woche");
+        assert_eq!(l[0].used_percent, 42.5);
+        assert_eq!(l[0].resets_at, Some(1_780_876_800));
+        assert_eq!(l[1].label, "Grok Build");
+        assert_eq!(l[2].label, "Grok Chat");
+        assert_eq!(l[3].label, "Zusatz $3 / $50");
+        assert!((l[3].used_percent - 6.0).abs() < 0.01);
+        // Ein Produkt mit demselben Prozent fällt weg
+        let one = parse_grok(&json!({"config": {"creditUsagePercent": 8.0, "productUsage": [{"product": "GrokBuild", "usagePercent": 8.0}]}}));
+        assert_eq!(one.len(), 1);
+        // Monatsguthaben in Cent, ohne Wochenprozent
+        let month = parse_grok(&json!({"config": {"monthlyLimit": {"val": 15000}, "used": {"val": 7500}, "billingPeriodEnd": "1970-01-02T00:00:00Z"}}));
+        assert_eq!(month[0].label, "Monat");
+        assert_eq!(month[0].used_percent, 50.0);
+        assert_eq!(month[0].resets_at, Some(86_400));
     }
 }

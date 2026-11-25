@@ -6,7 +6,7 @@
 //!
 //! Gespeichert je Benutzer in `settings` (`chains:<user>`), Routen `GET/PUT /chains`.
 //! „Am Limit“ heisst: zuletzt mit Rate-Limit abgebrochen (bis zum Zurücksetzen bzw. eine Stunde)
-//! oder ein Limit des Abos steht laut Anbieter bei 99 % oder mehr (Claude, Codex).
+//! oder ein Limit des Abos steht laut Anbieter bei 99 % oder mehr (Claude, Codex, Grok).
 
 use super::accounts::{self, AccountRow};
 use super::{messages, runs, runtime, threads, tools, usage};

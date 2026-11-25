@@ -232,19 +232,28 @@ pub fn level_color(used: f64) -> &'static str {
 
 /// Name eines Limits in der Übersicht: „5 Stunden“, „Woche“, sonst der Name des Sonderlimits.
 fn limit_name(l: &UsageLimit) -> String {
-    match limit_group(&l.key) {
-        Some(false) => tr("5 Stunden"),
-        Some(true) => tr("Woche"),
-        None => limit_short(l),
+    match l.key.as_str() {
+        "five_hour" | "primary" => tr("5 Stunden"),
+        "seven_day" | "secondary" => tr("Woche"),
+        // Grok: Woche oder Monat, je nachdem was der Anbieter meldet
+        "grok" => {
+            let label = l.label.trim();
+            if label.is_empty() { tr("Woche") } else { tr(label) }
+        }
+        _ => limit_short(l),
     }
 }
 
 /// Kurzer Name eines Limits für die Zeile: „5h“, „Woche“, sonst der Name des Sonderlimits.
 fn limit_short(l: &UsageLimit) -> String {
-    match limit_group(&l.key) {
-        Some(false) => "5h".into(),
-        Some(true) => tr("Woche"),
-        None => {
+    match l.key.as_str() {
+        "five_hour" | "primary" => "5h".into(),
+        "seven_day" | "secondary" => tr("Woche"),
+        "grok" => {
+            let label = l.label.trim();
+            if label.is_empty() { tr("Woche") } else { tr(label) }
+        }
+        _ => {
             let label = l.label.trim();
             if label.is_empty() { l.key.rsplit('_').next().unwrap_or(&l.key).to_string() } else { label.to_string() }
         }
@@ -258,7 +267,7 @@ fn limit_short(l: &UsageLimit) -> String {
 fn limit_group(key: &str) -> Option<bool> {
     match key {
         "five_hour" | "primary" => Some(false),
-        "seven_day" | "secondary" => Some(true),
+        "seven_day" | "secondary" | "grok" => Some(true),
         _ => None,
     }
 }
@@ -781,7 +790,7 @@ fn LimitsView(compact: bool, now: i64) -> Element {
     let names = [("5h", tr("5 Stunden")), ("today", tr("Heute")), ("7d", tr("7 Tage")), ("30d", tr("30 Tage"))];
     rsx! {
         if accounts.is_empty() {
-            p { class: "py-8 text-center text-sm text-muted-foreground", {tr("Keine Limits gemeldet. Abos von Claude und Codex melden ihre Limits nach dem ersten Lauf.")} }
+            p { class: "py-8 text-center text-sm text-muted-foreground", {tr("Keine Limits gemeldet. Abos von Claude, Codex und Grok melden ihre Limits nach der Anmeldung.")} }
         }
         if !accounts.is_empty() {
             LimitsPanel { list: accounts.clone(), now, wide: !compact }

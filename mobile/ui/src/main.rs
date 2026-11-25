@@ -1544,7 +1544,7 @@ fn Limits() -> Element {
                         let accounts: Vec<AccountUsage> = u.accounts.into_iter().filter(|a| !a.limits.is_empty()).collect();
                         rsx! {
                             if accounts.is_empty() {
-                                p { class: "py-10 text-center text-[15px] text-muted-foreground", "Noch keine Limits gemeldet – Claude und Codex melden sie nach dem ersten Lauf." }
+                                p { class: "py-10 text-center text-[15px] text-muted-foreground", "Noch keine Limits gemeldet – Claude, Codex und Grok melden sie nach der Anmeldung." }
                             }
                             for weekly in [false, true] {
                                 LimitCard { key: "{weekly}", weekly, accounts: accounts.clone(), now }
@@ -1559,7 +1559,7 @@ fn Limits() -> Element {
 
 #[component]
 fn LimitCard(weekly: bool, accounts: Vec<AccountUsage>, now: i64) -> Element {
-    let keys: &[&str] = if weekly { &["seven_day", "secondary"] } else { &["five_hour", "primary"] };
+    let keys: &[&str] = if weekly { &["seven_day", "secondary", "grok"] } else { &["five_hour", "primary"] };
     let rows: Vec<(String, UsageLimit)> = accounts
         .iter()
         .flat_map(|a| a.limits.iter().filter(|l| keys.contains(&l.key.as_str())).map(move |l| (if a.label.is_empty() { a.kind.name().to_string() } else { a.label.clone() }, l.clone())))

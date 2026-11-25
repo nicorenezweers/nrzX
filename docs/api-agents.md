@@ -107,7 +107,7 @@ Subagenten wartet, danach `done` (ungelesen) bzw. `error`; gestoppt → `idle`.
 
 | Methode | Pfad | |
 |---|---|---|
-| GET | `/usage?refresh=&tz=` | `UsageOverview`: je Konto Läufe/Tokens/Kosten für 5 h, heute (Zeitzone `tz` wie `Date.getTimezoneOffset()`), 7 und 30 Tage und – Claude-Abo (OAuth-Usage-API), Codex (Sitzungsprotokolle) – die Limits mit Zeitpunkt des Zurücksetzens (2 Minuten zwischengespeichert; antwortet der Anbieter nicht, bleibt der letzte Stand bis 6 Stunden mit `limitsError`). Gezählt wird aus `usage_log`: auch laufende Läufe (Tokens alle 5 s), Nebenläufe (Seiten-Chat, Dieter) und gelöschte Threads |
+| GET | `/usage?refresh=&tz=` | `UsageOverview`: je Konto Läufe/Tokens/Kosten für 5 h, heute (Zeitzone `tz` wie `Date.getTimezoneOffset()`), 7 und 30 Tage und – Claude-Abo (OAuth-Usage-API), Codex (Sitzungsprotokolle), Grok (`~/.grok/auth.json`, Abrechnung des CLIs: Woche, je Produkt, Zusatz) – die Limits mit Zeitpunkt des Zurücksetzens (2 Minuten zwischengespeichert; antwortet der Anbieter nicht, bleibt der letzte Stand bis 6 Stunden mit `limitsError`). Gezählt wird aus `usage_log`: auch laufende Läufe (Tokens alle 5 s), Nebenläufe (Seiten-Chat, Dieter) und gelöschte Threads |
 | GET/POST | `/notes` | `PromptNote[]` / `NoteInput` → `PromptNote` (vorbereitete Prompts, Ideen) |
 | PATCH/DELETE | `/notes/<id>` | |
 

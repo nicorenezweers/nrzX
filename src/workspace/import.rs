@@ -47,9 +47,9 @@ const LOGIN_FILES: &[&str] = &[
     // Kilo Code, Grok CLI
     ".config/kilo",
     ".kilocode/cli/config.json",
+    ".grok/auth.json",
     ".grok/user-settings.json",
     ".grok/settings.json",
-    ".grok/auth.json",
 ];
 
 /// Grösste Datei, die beim Kopieren der Anmeldung mitkommt.
