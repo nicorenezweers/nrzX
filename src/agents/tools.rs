@@ -314,6 +314,10 @@ async fn install_npm(state: &AppState, job: &Job, package: &str, programs: &[&st
     };
     let prefix = state.config.tools_dir().join("npm");
     tokio::fs::create_dir_all(&prefix).await.map_err(|e| e.to_string())?;
+    // Das alte Paket legt ebenfalls `grok` ab und kennt `login --device-auth` nicht.
+    if package == "@xai-official/grok" {
+        npm_retire(state, job, &npm, &prefix, "@vibe-kit/grok-cli").await;
+    }
     let spec = format!("{package}@latest");
     let args = [
         "install".to_string(),
@@ -367,7 +371,40 @@ async fn install_npm(state: &AppState, job: &Job, package: &str, programs: &[&st
     if version_of(state, &bin).await.is_empty() {
         job.line(&format!("Achtung: {} antwortet nicht auf --version – startet das Programm?", programs[0]));
     }
+    if package == "@xai-official/grok" && legacy_grok(&bin) {
+        return Err("grok zeigt nach der Installation noch auf @vibe-kit/grok-cli.".into());
+    }
     Ok(())
+}
+
+/// Paket unter dem npm-Prefix entfernen. Fehler hier stoppen die folgende Installation nicht:
+/// fehlt es, ist das der Normalfall.
+async fn npm_retire(state: &AppState, job: &Job, npm: &Path, prefix: &Path, package: &str) {
+    job.line(&format!("$ npm uninstall -g --prefix {} {package}", prefix.display()));
+    let mut cmd = crate::platform::command(npm);
+    cmd.args(["uninstall", "-g", "--prefix"]).arg(prefix).arg(package).current_dir(state.config.tools_dir()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    super::env::apply_base(&mut cmd, state);
+    cmd.env("npm_config_update_notifier", "false").env("NO_COLOR", "1");
+    match tokio::time::timeout(Duration::from_secs(120), cmd.output()).await {
+        Ok(Ok(out)) => {
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                job.line(line);
+            }
+        }
+        Ok(Err(e)) => job.line(&format!("Altes Paket nicht entfernt: {e}")),
+        Err(_) => job.line("Altes Paket: Zeitüberschreitung, die Installation läuft weiter."),
+    }
+}
+
+/// Das abgeschaltete `@vibe-kit/grok-cli`. Es hat kein `login --device-auth`.
+pub fn legacy_grok(bin: &Path) -> bool {
+    let path = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
+    legacy_grok_text(&path.to_string_lossy())
+}
+
+fn legacy_grok_text(path: &str) -> bool {
+    path.contains("@vibe-kit/grok-cli")
 }
 
 // ------------------------------------------------------------------ Node.js
@@ -701,6 +738,12 @@ fn stream(state: &State<AppState>, _user: CurrentUser, key: &str, mut end: Shutd
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_package() {
+        assert!(super::legacy_grok_text("/opt/npm/lib/node_modules/@vibe-kit/grok-cli/dist/index.js"));
+        assert!(!super::legacy_grok_text("/opt/npm/lib/node_modules/@xai-official/grok/bin/grok"));
+    }
+
     #[test]
     fn versions() {
         assert_eq!(super::extract_version("2.1.316 (Claude Code)"), "2.1.316");

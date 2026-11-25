@@ -239,11 +239,11 @@ pub static SPECS: [Spec; 6] = [
                 key: "login",
                 label: "Grok-Konto (Anmeldung im CLI)",
                 env_vars: &[],
-                hint: "SuperGrok oder X Premium: Anmeldung mit Geräte-Code („grok login --device-auth“).",
+                hint: "SuperGrok oder X Premium: „grok login --device-auth“. Den Code aus dem Terminal im Browser bestätigen.",
             },
         ],
         login_command: "grok login --device-auth",
-        login_help: "Öffne den angezeigten Link, melde dich bei Grok an und gib den Geräte-Code ein. Das Terminal meldet danach die erfolgreiche Anmeldung.",
+        login_help: "Im Terminal erscheinen ein Link und ein Geräte-Code. Öffne den Link im Browser und bestätige dort genau diesen Code. Das Terminal meldet danach die Anmeldung. Den Code nicht ins Terminal eintippen.",
         supports_resume: true,
     },
 ];

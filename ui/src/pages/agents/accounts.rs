@@ -515,6 +515,8 @@ fn LoginDialog(open: Signal<bool>, account: AgentAccount, session: LoginSession,
     let term = session.terminal.id.clone();
     let mut code = use_signal(String::new);
     let mut sent = use_signal(|| false);
+    // Grok: der Code steht im Terminal und wird im Browser bestätigt, nicht hier eingetippt.
+    let device_code = session.command.contains("--device-auth") || session.command.contains("--device-code");
     // Programm beendet (z. B. falscher Code) – dann neu starten statt weiter einzugeben
     let mut ended = use_signal(|| false);
     let mut check = move || {
@@ -560,8 +562,27 @@ fn LoginDialog(open: Signal<bool>, account: AgentAccount, session: LoginSession,
                         },
                     }
                 }
-                // Code aus dem Browser in einem normalen Feld: Tippen, Einfügen (auch Rechtsklick,
-                // Handy) und man sieht, was man abschickt – manche CLIs zeigen ihn nicht an.
+                // Grok zeigt den Code im Terminal; bestätigt wird er im Browser.
+                // Andere CLIs: Code aus dem Browser hier einfügen (manche zeigen ihn im Terminal nicht an).
+                if device_code {
+                    div { class: "grid gap-1.5",
+                        p { class: "text-sm text-muted-foreground", {tr("Den Geräte-Code aus dem Terminal im Browser bestätigen. Hier nichts eintippen.")} }
+                        if ended() {
+                            div {
+                                button {
+                                    r#type: "button",
+                                    class: btn(BTN_PRIMARY),
+                                    onclick: {
+                                        let account = account.clone();
+                                        move |_| restart.call(account.clone())
+                                    },
+                                    icons::RotateCcw {}
+                                    {tr("Neu starten")}
+                                }
+                            }
+                        }
+                    }
+                } else {
                 form {
                     class: "grid gap-1.5",
                     onsubmit: {
@@ -625,6 +646,7 @@ fn LoginDialog(open: Signal<bool>, account: AgentAccount, session: LoginSession,
                             {tr("Manche CLIs (z. B. Claude Code) zeigen den Code im Terminal nicht an. Hier siehst du ihn und schickst ihn mit Enter ab.")}
                         }
                     }
+                }
                 }
                 div { class: "flex flex-wrap items-center justify-between gap-2",
                     if let Some(s) = status() {

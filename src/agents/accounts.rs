@@ -553,8 +553,13 @@ async fn login(state: &State<AppState>, user: CurrentUser, id: i64) -> AppResult
     if s.login_command.is_empty() {
         return Err(AppError::bad(format!("{} kennt keine Anmeldung im CLI – bitte einen API-Schlüssel eintragen.", r.kind().name())));
     }
-    if tools::find_agent(state, r.kind()).is_none() {
+    let Some((bin, _)) = tools::find_agent(state, r.kind()) else {
         return Err(AppError::bad(format!("{} ist nicht installiert (Einstellungen → Werkzeuge).", r.kind().name())));
+    };
+    if r.kind() == AgentKind::Grok && tools::legacy_grok(&bin) {
+        return Err(AppError::bad(
+            "Installiert ist das alte Grok-CLI (@vibe-kit/grok-cli). Es kennt keine Anmeldung. Unter Einstellungen → Werkzeuge Grok aktualisieren.",
+        ));
     }
     ensure_home(state, id).await?;
     let mut extra = Vec::new();
@@ -640,8 +645,16 @@ async fn probe(state: &AppState, r: &AccountRow) -> (String, String) {
                 needs_login("Kein Anbieter angemeldet.")
             }
         }
-        AgentKind::Grok => needs_login("Bitte einen API-Schlüssel eintragen."),
+        AgentKind::Grok => match tokio::fs::read_to_string(home.join(".grok/auth.json")).await {
+            Ok(t) if grok_session_present(&t) => ok("Mit Grok angemeldet."),
+            _ => needs_login("Nicht angemeldet."),
+        },
     }
+}
+
+/// `grok login` schreibt die Sitzung nach `~/.grok/auth.json` (Objekt, nicht leer).
+fn grok_session_present(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).ok().is_some_and(|v| v.as_object().is_some_and(|o| !o.is_empty()))
 }
 
 /// Kurzer, lokaler Aufruf des CLIs in der Umgebung des Kontos (Erfolg, Ausgabe).
@@ -670,6 +683,14 @@ mod tests {
         assert_eq!(super::secret_hint("sk-ant-api03-abcdefghijklmnop"), "sk-…mnop");
         assert_eq!(super::secret_hint("abcdefghijklmnopqrstuvwxyz"), "abc…wxyz");
         assert_eq!(super::secret_hint("short"), "…");
+    }
+
+    #[test]
+    fn grok_auth_file() {
+        assert!(super::grok_session_present(r#"{"https://auth.x.ai":{"email":"a@b.c"}}"#));
+        assert!(!super::grok_session_present("{}"));
+        assert!(!super::grok_session_present(""));
+        assert!(!super::grok_session_present("not json"));
     }
 
     /// Verknüpfte Anmeldung: die neuere Datei gewinnt (in beide Richtungen), in nrzCode entsteht nichts Neues.

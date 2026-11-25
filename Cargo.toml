@@ -1,6 +1,6 @@
 [package]
 name = "nrzx"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "nrzX – Coding-Agenten (Claude Code, Codex, Gemini, OpenCode, Kilo Code, Grok) im Browser, verbunden mit nrzGit – komplett in Rust (Rocket, Dioxus, rust-ui)"
 license = "AGPL-3.0-or-later"
