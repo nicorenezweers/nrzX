@@ -1752,12 +1752,38 @@ async fn invocation(state: &AppState, ctx: &Ctx<'_>) -> AppResult<Invocation> {
             args.push(full_prompt(ctx, new_session, &[]));
         }
         AgentKind::Grok => {
-            grok_settings(ctx.workdir, ctx.mcp).await;
-            args.extend(["-d".into(), ctx.workdir.to_string_lossy().into_owned()]);
+            // Offizielles Grok Build CLI: Responses-/Agent-Tools, nicht die abgeschaltete Live Search.
+            env.push(("GROK_DISABLE_AUTOUPDATER".into(), "1".into()));
+            if !ro {
+                let home = grok_run_home(state, ctx).await?;
+                env.push(("GROK_HOME".into(), home.to_string_lossy().into_owned()));
+            }
+            args.extend(["--output-format".into(), "streaming-json".into(), "--verbatim".into(), "--always-approve".into()]);
+            args.extend(["--cwd".into(), ctx.workdir.to_string_lossy().into_owned()]);
+            if ro {
+                args.extend(["--sandbox".into(), "read-only".into()]);
+                args.push("--no-subagents".into());
+            }
             if !t.model.is_empty() {
                 args.extend(["-m".into(), t.model.clone()]);
             }
-            args.extend(["-p".into(), full_prompt(ctx, true, &all_paths)]);
+            if let Some(e) = effort {
+                args.extend(["--effort".into(), e.into()]);
+            }
+            if let Some(sid) = &ctx.resume {
+                args.extend(["--resume".into(), sid.clone()]);
+            }
+            if !ctx.hint.is_empty() && ctx.hint.len() <= 80_000 {
+                args.extend(["--rules".into(), ctx.hint.clone()]);
+            }
+            args.extend(["--add-dir".into(), ctx.rundir.to_string_lossy().into_owned()]);
+            for r in ctx.refs {
+                args.extend(["--add-dir".into(), r.path.to_string_lossy().into_owned()]);
+            }
+            let prompt_path = ctx.rundir.join("prompt.txt");
+            let with_hint = ctx.hint.len() > 80_000;
+            tokio::fs::write(&prompt_path, full_prompt(ctx, with_hint, &all_paths)).await?;
+            args.extend(["--prompt-file".into(), prompt_path.to_string_lossy().into_owned()]);
         }
     }
     Ok(Invocation { args, stdin, env })
@@ -1814,52 +1840,142 @@ async fn gemini_settings(acc: &AccountRow, state: &AppState, forges: &[Forge]) -
     Ok(())
 }
 
-/// Grok CLI liest MCP-Server nur aus `.grok/settings.json` im Arbeitsordner. Nur anlegen,
-/// wenn die Datei fehlt oder von nrzX stammt, und in `.git/info/exclude` eintragen.
-async fn grok_settings(workdir: &Path, mcp: &Mcp) {
-    let dir = workdir.join(".grok");
-    let path = dir.join("settings.json");
-    if let Ok(t) = tokio::fs::read_to_string(&path).await {
-        if !t.contains("\"nrzx\"") {
-            return;
+/// Eigenes `GROK_HOME` für diesen Lauf: Anmeldung und Sitzungen bleiben im Konto
+/// (Verknüpfungen), die MCP-Server von nrzX stehen nur in der Kopie der Konfiguration.
+/// So landet kein Lauf-Token im Projekt, und das interaktive CLI sieht die Server nicht.
+async fn grok_run_home(state: &AppState, ctx: &Ctx<'_>) -> AppResult<PathBuf> {
+    let account = accounts::home(state, ctx.acc.id).join(".grok");
+    let dest = ctx.rundir.join("grok-home");
+    let block = grok_mcp_block(ctx.mcp);
+    let account_cfg = account.join("config.toml");
+    let base = tokio::fs::read_to_string(&account_cfg).await.unwrap_or_default();
+    let home = dest.clone();
+    tokio::task::spawn_blocking(move || prepare_grok_home(&account, &home, &base, &block))
+        .await
+        .map_err(|e| AppError::internal(format!("Grok-Konfiguration: {e}")))?
+        .map_err(|e| AppError::internal(format!("Grok-Konfiguration: {e}")))?;
+    Ok(dest)
+}
+
+fn prepare_grok_home(account: &Path, dest: &Path, base_config: &str, block: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    std::fs::create_dir_all(account.join("sessions"))?;
+    if account.is_dir() {
+        for ent in std::fs::read_dir(account)? {
+            let ent = ent?;
+            if ent.file_name() == "config.toml" {
+                continue;
+            }
+            let link = dest.join(ent.file_name());
+            if link.exists() {
+                continue;
+            }
+            if let Err(e) = symlink_any(&ent.path(), &link) {
+                tracing::warn!("Grok: {} nicht verknüpft ({e})", ent.path().display());
+            }
         }
     }
-    let mut servers = serde_json::Map::new();
-    servers.insert(
-        "nrzx".into(),
-        json!({"name": "nrzx", "transport": {"type": "http", "url": mcp.url, "headers": {"Authorization": format!("Bearer {}", mcp.token)}}}),
-    );
+    let tables = mcp_table_names(block);
+    let mut text = without_toml_tables(base_config, &tables);
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(block);
+    std::fs::write(dest.join("config.toml"), text)?;
+    Ok(())
+}
+
+fn symlink_any(src: &Path, dest: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dest)
+    }
+    #[cfg(windows)]
+    {
+        if src.is_dir() {
+            std::os::windows::fs::symlink_dir(src, dest)
+        } else {
+            std::os::windows::fs::symlink_file(src, dest)
+        }
+    }
+}
+
+/// MCP-Server dieses Laufs. Adresse und Token von nrzX kommen aus der Umgebung,
+/// damit parallele Läufe dieselbe Form der Datei nutzen könnten.
+fn grok_mcp_block(mcp: &Mcp) -> String {
+    let mut s = String::from("\n# nrzx-managed-start\n");
+    s.push_str(&grok_http_server("nrzx", "${NRZX_MCP_URL}", "Bearer ${NRZX_MCP_TOKEN}"));
     for f in mcp.direct_git() {
-        servers.insert(
-            f.name.into(),
-            json!({"name": f.name, "transport": {"type": "http", "url": f.url, "headers": {"Authorization": format!("Bearer {}", f.token)}}}),
-        );
+        s.push_str(&grok_http_server(f.name, &format!("${{{}}}", f.url_var()), &format!("Bearer ${{{}}}", f.token_var())));
     }
-    if tokio::fs::create_dir_all(&dir).await.is_err() {
-        return;
-    }
-    let _ = tokio::fs::write(&path, serde_json::to_vec_pretty(&json!({"mcpServers": servers})).unwrap_or_default()).await;
-    // Nicht als Änderung im Repository zeigen
-    let git = workdir.join(".git");
-    let info = if git.is_dir() {
-        Some(git.join("info"))
-    } else if let Ok(t) = tokio::fs::read_to_string(&git).await {
-        // Worktree: „gitdir: <repo>/.git/worktrees/<name>“ → gemeinsames info/
-        t.trim().strip_prefix("gitdir:").map(|p| {
-            let p = PathBuf::from(p.trim());
-            p.parent().and_then(|x| x.parent()).map(|x| x.join("info")).unwrap_or(p.join("info"))
-        })
-    } else {
-        None
-    };
-    if let Some(info) = info {
-        let exclude = info.join("exclude");
-        let current = tokio::fs::read_to_string(&exclude).await.unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == ".grok/") {
-            let _ = tokio::fs::create_dir_all(&info).await;
-            let _ = tokio::fs::write(&exclude, format!("{current}{}.grok/\n", if current.is_empty() || current.ends_with('\n') { "" } else { "\n" })).await;
+    for m in &mcp.bot {
+        if !toml_key(&m.name) {
+            continue;
+        }
+        if !m.url.is_empty() {
+            let auth = if m.token.is_empty() { String::new() } else { format!("Bearer {}", m.token) };
+            s.push_str(&grok_http_server(&m.name, &m.url, &auth));
+        } else if !m.command.is_empty() {
+            s.push_str(&grok_stdio_server(&m.name, &m.command));
         }
     }
+    s.push_str("# nrzx-managed-end\n");
+    s
+}
+
+fn toml_key(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn grok_http_server(name: &str, url: &str, auth: &str) -> String {
+    if !toml_key(name) {
+        return String::new();
+    }
+    let mut s = format!("[mcp_servers.{name}]\nurl = {}\n", toml_str(url));
+    if !auth.is_empty() {
+        s.push_str(&format!("headers = {{ Authorization = {} }}\n", toml_str(auth)));
+    }
+    s.push_str("startup_timeout_sec = 30\ntool_timeout_sec = 3600\n\n");
+    s
+}
+
+fn grok_stdio_server(name: &str, command: &str) -> String {
+    let mut parts = command.split_whitespace();
+    let Some(cmd) = parts.next() else { return String::new() };
+    let args: Vec<String> = parts.map(toml_str).collect();
+    format!(
+        "[mcp_servers.{name}]\ncommand = {}\nargs = [{}]\nstartup_timeout_sec = 30\ntool_timeout_sec = 3600\n\n",
+        toml_str(cmd),
+        args.join(", ")
+    )
+}
+
+fn mcp_table_names(block: &str) -> Vec<String> {
+    block.lines().filter(|l| l.starts_with('[') && l.ends_with(']')).map(|l| l.to_string()).collect()
+}
+
+/// Tabellen `tables` (z. B. `[mcp_servers.nrzx]`) und die Markierung von nrzX aus einer
+/// TOML-Datei entfernen. Die Datei des Benutzers selbst wird nicht verändert.
+fn without_toml_tables(text: &str, tables: &[String]) -> String {
+    let mut out = String::new();
+    let mut skip = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t == "# nrzx-managed-start" || t == "# nrzx-managed-end" {
+            continue;
+        }
+        if t.starts_with('[') && t.ends_with(']') {
+            skip = tables.iter().any(|name| t == name);
+            if skip {
+                continue;
+            }
+        } else if skip {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1867,6 +1983,27 @@ mod tests {
     #[test]
     fn toml_strings() {
         assert_eq!(super::toml_str("a \"b\"\nc"), "\"a \\\"b\\\"\\nc\"");
+    }
+
+    #[test]
+    fn grok_config_keeps_user_tables() {
+        let mcp = super::Mcp {
+            url: "http://127.0.0.1:9/mcp".into(),
+            token: "tok".into(),
+            forges: Vec::new(),
+            gateway: true,
+            bot: Vec::new(),
+        };
+        let block = super::grok_mcp_block(&mcp);
+        assert!(block.contains("[mcp_servers.nrzx]"));
+        assert!(block.contains("${NRZX_MCP_TOKEN}"));
+        assert!(!block.contains("tok"));
+        let base = "[ui]\ntheme = \"dark\"\n\n[mcp_servers.nrzx]\nurl = \"https://alt\"\n\n[mcp_servers.other]\nurl = \"https://other\"\n";
+        let text = super::without_toml_tables(base, &super::mcp_table_names(&block));
+        assert!(text.contains("[ui]"));
+        assert!(text.contains("theme = \"dark\""));
+        assert!(text.contains("[mcp_servers.other]"));
+        assert!(!text.contains("https://alt"));
     }
 }
 

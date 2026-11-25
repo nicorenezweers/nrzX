@@ -121,7 +121,7 @@ Subagenten wartet, danach `done` (ungelesen) bzw. `error`; gestoppt → `idle`.
 | POST | `/terminals/<id>/input` | `TerminalInput` {data} |
 | POST | `/terminals/<id>/resize` | `TerminalSize` {cols, rows} |
 | DELETE | `/terminals/<id>` | |
-| POST | `/threads/<id>/cli` | `TerminalSize` {cols, rows} → `TerminalInfo` – das CLI des Agenten selbst (natives CLI statt des Chats) im Arbeitsordner des Threads, mit dessen Konto und Modell, setzt die Sitzung fort (`--resume`, `codex resume`, `-s` …; Grok: neue Sitzung); ohne Rückfragen wie im Chat, bei „Nur lesen“ fragt das CLI. Ein laufendes CLI des Threads kommt zurück (es läuft weiter, während die Oberfläche den Chat zeigt); höchstens 4 je Benutzer, ältere werden geschlossen; `409`, solange ein Lauf arbeitet. Startet ein Lauf, schliesst der Server das CLI mit Exit-Code `-2` (nur ein Programm schreibt in die Sitzung) – die Oberfläche startet es danach neu |
+| POST | `/threads/<id>/cli` | `TerminalSize` {cols, rows} → `TerminalInfo` – das CLI des Agenten selbst (natives CLI statt des Chats) im Arbeitsordner des Threads, mit dessen Konto und Modell, setzt die Sitzung fort (`--resume`, `codex resume`, `-s` …; Grok: `--resume`); ohne Rückfragen wie im Chat, bei „Nur lesen“ fragt das CLI. Ein laufendes CLI des Threads kommt zurück (es läuft weiter, während die Oberfläche den Chat zeigt); höchstens 4 je Benutzer, ältere werden geschlossen; `409`, solange ein Lauf arbeitet. Startet ein Lauf, schliesst der Server das CLI mit Exit-Code `-2` (nur ein Programm schreibt in die Sitzung) – die Oberfläche startet es danach neu |
 
 ## MCP-Server `POST /mcp`
 
@@ -152,4 +152,4 @@ Jeder Lauf bekommt `nrzx` als `http://127.0.0.1:<Rocket-Port>/mcp` und – falls
 | Gemini CLI | `--output-format stream-json --yolo --skip-trust [-m] [--resume <id>] -p <prompt>` | `mcpServers` in `<home>/.gemini/settings.json` mit `$NRZX_MCP_URL`/`$NRZX_MCP_TOKEN` |
 | OpenCode | `run --format json --auto [-m anbieter/modell] [--variant] [-s <id>] [-f datei] -- <prompt>` | `OPENCODE_CONFIG_CONTENT` (`mcp.<name>` remote) |
 | Kilo Code | wie OpenCode (`kilo run …`) | `KILO_CONFIG_CONTENT` |
-| Grok CLI | `-p <prompt> -d <ordner> [-m]` (keine Sitzungen: Verlauf im Prompt) | `.grok/settings.json` im Arbeitsordner (nur wenn frei, in `.git/info/exclude`) |
+| Grok CLI | `--prompt-file <lauf>/prompt.txt --output-format streaming-json --verbatim --always-approve --cwd <ordner> [-m] [--effort] [--resume <id>] [--sandbox read-only]` (Paket `@xai-official/grok`, Agent Tools API) | `GROK_HOME=<lauf>/grok-home`: Kopie von `~/.grok` plus `[mcp_servers.nrzx]` mit `$NRZX_MCP_URL` / `$NRZX_MCP_TOKEN` |

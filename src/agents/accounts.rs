@@ -127,6 +127,10 @@ pub fn env_for(state: &AppState, r: &AccountRow) -> Vec<(String, String)> {
         ("OPENCODE_DISABLE_AUTOUPDATE".into(), "1".into()),
         ("KILO_DISABLE_AUTOUPDATE".into(), "1".into()),
     ]);
+    if r.kind() == AgentKind::Grok {
+        // Versionen verwaltet nrzX. Das offizielle CLI sucht den Schlüssel als XAI_API_KEY.
+        env.push(("GROK_DISABLE_AUTOUPDATER".into(), "1".into()));
+    }
     // macOS: Im Konto-Home gibt es keinen Schlüsselbund. Schreibversuche dorthin scheitern still,
     // statt dass macOS „Schlüsselbund nicht gefunden“ zeigt (`security`-Ersatz vor dem System)
     if let Some(dir) = crate::platform::keychain_shim_dir(&state.config.data_dir) {
@@ -144,6 +148,7 @@ pub fn env_for(state: &AppState, r: &AccountRow) -> Vec<(String, String)> {
         match (r.kind(), var.as_str()) {
             (AgentKind::Codex, "OPENAI_API_KEY") => env.push(("CODEX_API_KEY".into(), secret.to_string())),
             (AgentKind::Grok, "GROK_API_KEY") => env.push(("XAI_API_KEY".into(), secret.to_string())),
+            (AgentKind::Grok, "XAI_API_KEY") => env.push(("GROK_API_KEY".into(), secret.to_string())),
             (AgentKind::Gemini, "GEMINI_API_KEY") => env.push(("GOOGLE_API_KEY".into(), secret.to_string())),
             _ => {}
         }
@@ -159,6 +164,7 @@ const CRED_FILES: &[&str] = &[
     ".local/share/opencode/auth.json",
     ".kilocode/cli/config.json",
     ".grok/user-settings.json",
+    ".grok/auth.json",
 ];
 
 /// Mit nrzCode verknüpfte Anmeldung abgleichen: je Datei gewinnt die neuere – erneuert eine der

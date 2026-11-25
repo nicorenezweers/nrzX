@@ -218,22 +218,33 @@ pub static SPECS: [Spec; 6] = [
     Spec {
         kind: AgentKind::Grok,
         programs: &["grok"],
-        package: "@vibe-kit/grok-cli",
+        // Offizielles Grok Build CLI. @vibe-kit/grok-cli nutzt die abgeschaltete Live Search
+        // (HTTP 410) und ist nicht mehr brauchbar.
+        package: "@xai-official/grok",
         models: &[
-            ("grok-code-fast-1", "Grok Code Fast"),
-            ("grok-4-1-fast-reasoning", "Grok 4.1 Fast (Reasoning)"),
-            ("grok-4-latest", "Grok 4"),
+            ("grok-4.7", "Grok 4.7"),
+            ("grok-4.7-build-fast", "Grok 4.7 Build Fast"),
+            ("grok-4.6", "Grok 4.6"),
+            ("grok-4.5", "Grok 4.5"),
         ],
-        efforts: &[],
-        auth: &[AuthSpec {
-            key: "api_key",
-            label: "API-Schlüssel (xAI)",
-            env_vars: &["GROK_API_KEY"],
-            hint: "Schlüssel aus der xAI-Konsole.",
-        }],
-        login_command: "",
-        login_help: "",
-        supports_resume: false,
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+        auth: &[
+            AuthSpec {
+                key: "api_key",
+                label: "API-Schlüssel (xAI)",
+                env_vars: &["XAI_API_KEY", "GROK_API_KEY"],
+                hint: "Schlüssel aus der xAI-Konsole (console.x.ai). Grok nutzt damit die Agent Tools API.",
+            },
+            AuthSpec {
+                key: "login",
+                label: "Grok-Konto (Anmeldung im CLI)",
+                env_vars: &[],
+                hint: "SuperGrok oder X Premium: Anmeldung mit Geräte-Code („grok login --device-auth“).",
+            },
+        ],
+        login_command: "grok login --device-auth",
+        login_help: "Öffne den angezeigten Link, melde dich bei Grok an und gib den Geräte-Code ein. Das Terminal meldet danach die erfolgreiche Anmeldung.",
+        supports_resume: true,
     },
 ];
 
@@ -303,7 +314,7 @@ async fn list(state: &State<AppState>, user: CurrentUser) -> AppResult<Json<Vec<
     Ok(Json(out))
 }
 
-/// `GET /agents/<kind>/models?account=` – Modelle; Codex, OpenCode und Kilo listen sie selbst
+/// `GET /agents/<kind>/models?account=` – Modelle; Codex, OpenCode, Kilo und Grok listen sie selbst
 /// (lokal, ohne kostenpflichtige Aufrufe), sonst die Vorschläge von nrzX.
 #[get("/agents/<kind>/models?<account>")]
 async fn models(state: &State<AppState>, user: CurrentUser, kind: &str, account: Option<i64>) -> AppResult<Json<ModelList>> {
@@ -319,7 +330,7 @@ async fn models(state: &State<AppState>, user: CurrentUser, kind: &str, account:
     };
     let args: &[&str] = match kind {
         AgentKind::Codex => &["debug", "models"],
-        AgentKind::Opencode | AgentKind::Kilo => &["models"],
+        AgentKind::Opencode | AgentKind::Kilo | AgentKind::Grok => &["models"],
         _ => return Ok(Json(builtin)),
     };
     let mut cmd = crate::platform::command(&bin);
@@ -337,6 +348,7 @@ async fn models(state: &State<AppState>, user: CurrentUser, kind: &str, account:
     let text = String::from_utf8_lossy(&out.stdout);
     let models = match kind {
         AgentKind::Codex => parse_codex_models(&text),
+        AgentKind::Grok => parse_grok_models(&text),
         _ => text
             .lines()
             .map(|l| l.trim())
@@ -371,6 +383,21 @@ fn parse_codex_models(text: &str) -> Vec<ModelOption> {
     list.into_iter().map(|(_, m)| m).collect()
 }
 
+/// `grok models` – Zeilen `* id` bzw. `- id`, der Hinweis „(default)“ fällt weg.
+fn parse_grok_models(text: &str) -> Vec<ModelOption> {
+    text.lines()
+        .filter_map(|l| {
+            let rest = l.trim().strip_prefix('*').or_else(|| l.trim().strip_prefix('-'))?.trim();
+            let id = rest.split_whitespace().next()?.trim();
+            if id.is_empty() || id.contains('/') || id.contains('(') {
+                return None;
+            }
+            Some(ModelOption { id: id.to_string(), label: id.to_string() })
+        })
+        .take(400)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -378,5 +405,12 @@ mod tests {
         let text = r#"{"models":[{"slug":"b","display_name":"B","visibility":"list","priority":2},{"slug":"a","display_name":"A","visibility":"list","priority":1},{"slug":"x","visibility":"hide","priority":0}]}"#;
         let m = super::parse_codex_models(text);
         assert_eq!(m.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn grok_models() {
+        let text = "You are logged in with grok.com.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.7-build-fast\n  - grok-4.6\n";
+        let m = super::parse_grok_models(text);
+        assert_eq!(m.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["grok-4.7", "grok-4.7-build-fast", "grok-4.6"]);
     }
 }

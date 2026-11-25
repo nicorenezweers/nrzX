@@ -1,7 +1,7 @@
 [package]
 name = "nrzx-macos"
 # Gleiche Version wie das Hauptprogramm – scripts/macos.sh prüft das.
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 description = "nrzX als native macOS-App: eingebetteter Server, WKWebView-Fenster, Menüleiste und automatische Updates aus nrzGit"
 license = "AGPL-3.0-or-later"

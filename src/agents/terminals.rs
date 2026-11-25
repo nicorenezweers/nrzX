@@ -459,10 +459,19 @@ fn cli_args(kind: AgentKind, t: &threads::ThreadRow, dir: &Path) -> (Vec<String>
             env.push((var.into(), cfg.to_string()));
         }
         AgentKind::Grok => {
-            args.extend(["-d".into(), dir.to_string_lossy().into_owned()]);
+            args.extend(["--cwd".into(), dir.to_string_lossy().into_owned()]);
+            if let Some(s) = session {
+                args.extend(["--resume".into(), s]);
+            }
             if let Some(m) = model {
                 args.extend(["-m".into(), m]);
             }
+            if t.read_only {
+                args.extend(["--sandbox".into(), "read-only".into()]);
+            } else {
+                args.push("--always-approve".into());
+            }
+            env.push(("GROK_DISABLE_AUTOUPDATER".into(), "1".into()));
         }
     }
     (args, env)

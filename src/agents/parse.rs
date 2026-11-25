@@ -6,7 +6,7 @@
 //! * Codex: `exec --json` (thread.started, item.*, turn.completed …)
 //! * Gemini CLI: `--output-format stream-json` (init, message, tool_use, tool_result, result)
 //! * OpenCode / Kilo: `run --format json` (step_start, text, tool_use, step_finish, error)
-//! * Grok CLI: `-p` (OpenAI-Nachrichten als JSON-Zeilen am Ende)
+//! * Grok CLI: `--output-format streaming-json` (thought, text, tool_call, usage, end)
 
 use nrzx_shared::agents::EditDiff;
 use nrzx_shared::AgentKind;
@@ -49,11 +49,13 @@ pub enum Ev {
 pub struct Parser {
     pub kind: AgentKind,
     session_sent: bool,
+    /// Aufeinanderfolgende Denk-Stücke von Grok, bis ein anderes Ereignis kommt
+    grok_thought: String,
 }
 
 impl Parser {
     pub fn new(kind: AgentKind) -> Self {
-        Parser { kind, session_sent: false }
+        Parser { kind, session_sent: false, grok_thought: String::new() }
     }
 
     /// Eine Zeile der Standardausgabe.
@@ -63,10 +65,10 @@ impl Parser {
             return Vec::new();
         }
         let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            return vec![Ev::Raw(strip_ansi(line.trim_end()))];
+            return self.raw_line(strip_ansi(line.trim_end()));
         };
         if !v.is_object() {
-            return vec![Ev::Raw(trimmed.to_string())];
+            return self.raw_line(trimmed.to_string());
         }
         let mut out = match self.kind {
             AgentKind::Claude => claude(&v),
@@ -75,6 +77,9 @@ impl Parser {
             AgentKind::Opencode | AgentKind::Kilo => opencode(&v),
             AgentKind::Grok => grok(&v),
         };
+        if self.kind == AgentKind::Grok {
+            out = self.coalesce_grok(out);
+        }
         // Sitzungs-ID nur einmal melden
         out.retain(|e| match e {
             Ev::Session(_) if self.session_sent => false,
@@ -84,6 +89,32 @@ impl Parser {
             }
             _ => true,
         });
+        out
+    }
+
+    /// Zeile ohne JSON. Ein offener Denk-Block von Grok wird davor abgeschlossen.
+    fn raw_line(&mut self, text: String) -> Vec<Ev> {
+        let mut out = Vec::new();
+        if !self.grok_thought.is_empty() {
+            out.push(Ev::Thinking(std::mem::take(&mut self.grok_thought)));
+        }
+        out.push(Ev::Raw(text));
+        out
+    }
+
+    /// Denk-Stücke sammeln, bis Text, ein Werkzeug oder das Ende kommt – ein Block statt vieler.
+    fn coalesce_grok(&mut self, evs: Vec<Ev>) -> Vec<Ev> {
+        let mut out = Vec::new();
+        for e in evs {
+            if let Ev::Thinking(t) = e {
+                self.grok_thought.push_str(&t);
+            } else {
+                if !self.grok_thought.is_empty() {
+                    out.push(Ev::Thinking(std::mem::take(&mut self.grok_thought)));
+                }
+                out.push(e);
+            }
+        }
         out
     }
 }
@@ -475,6 +506,119 @@ fn opencode(v: &Value) -> Vec<Ev> {
 // ------------------------------------------------------------------ Grok CLI
 
 fn grok(v: &Value) -> Vec<Ev> {
+    // Altes @vibe-kit/grok-cli: OpenAI-Nachrichten ohne `type`
+    if v.get("type").is_none() && v.get("role").is_some() {
+        return grok_legacy(v);
+    }
+    match v["type"].as_str().unwrap_or("") {
+        "text" => {
+            let t = s(&v["data"]);
+            if t.is_empty() { Vec::new() } else { vec![Ev::TextDelta(t)] }
+        }
+        "thought" => {
+            let t = s(&v["data"]);
+            if t.is_empty() { Vec::new() } else { vec![Ev::Thinking(t)] }
+        }
+        "tool_call" => grok_tool_call(v),
+        "tool_call_update" => grok_tool_update(v),
+        "usage" => {
+            let id = s(&v["messageId"]);
+            if id.is_empty() || !v["usage"].is_object() {
+                return Vec::new();
+            }
+            let (input, output, cache_read, cache_write, _) = grok_usage(&v["usage"]);
+            vec![Ev::UsageLive { id, input, output, cache_read, cache_write }]
+        }
+        "end" => {
+            let mut out = vec![Ev::CloseText];
+            if let Some(id) = v["sessionId"].as_str().filter(|id| !id.is_empty()) {
+                out.push(Ev::Session(id.to_string()));
+            }
+            if v["usage"].is_object() {
+                let (input, output, cache_read, cache_write, reasoning) = grok_usage(&v["usage"]);
+                out.push(Ev::UsageTotal {
+                    input,
+                    output,
+                    cost: v["total_cost_usd"].as_f64().unwrap_or(0.0),
+                    cache_read,
+                    cache_write,
+                    reasoning,
+                });
+            }
+            let stop = s(&v["stopReason"]);
+            out.push(Ev::Result { error: stop == "refusal", text: String::new() });
+            out
+        }
+        "error" => {
+            let msg = s(&v["message"]);
+            if msg.is_empty() { Vec::new() } else { vec![Ev::Error(msg)] }
+        }
+        "max_turns_reached" => vec![Ev::System("Grok hat die Höchstzahl der Runden erreicht.".into())],
+        _ => Vec::new(),
+    }
+}
+
+/// Verbrauch von Grok: `input_tokens` ist ohne Cache, Denk-Tokens zählen zur Ausgabe.
+fn grok_usage(u: &Value) -> (i64, i64, i64, i64, i64) {
+    let cache_read = u["cache_read_input_tokens"].as_i64().unwrap_or(0);
+    let cache_write = u["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+    let reasoning = u["reasoning_tokens"].as_i64().unwrap_or(0);
+    let input = u["input_tokens"].as_i64().unwrap_or(0) + cache_read + cache_write;
+    let output = u["output_tokens"].as_i64().unwrap_or(0) + reasoning;
+    (input, output, cache_read, cache_write, reasoning)
+}
+
+fn grok_input(v: &Value) -> Value {
+    match v {
+        Value::String(s) => serde_json::from_str(s).unwrap_or(Value::String(s.clone())),
+        Value::Null => serde_json::json!({}),
+        other => other.clone(),
+    }
+}
+
+/// `Some(true)` Fehler, `Some(false)` fertig, `None` noch laufend.
+fn grok_done(status: &str) -> Option<bool> {
+    match status {
+        "completed" | "complete" | "done" | "ok" => Some(false),
+        "failed" | "error" | "cancelled" | "canceled" => Some(true),
+        _ => None,
+    }
+}
+
+fn grok_tool_call(v: &Value) -> Vec<Ev> {
+    let id = s(&v["toolCallId"]);
+    let mut name = s(&v["toolName"]);
+    if name.is_empty() {
+        name = s(&v["title"]);
+    }
+    let input = grok_input(&v["rawInput"]);
+    let mut out = vec![Ev::CloseText, Ev::ToolStart { id: id.clone(), name, input }];
+    if let Some(error) = grok_done(&s(&v["status"])) {
+        out.push(Ev::ToolEnd { id, output: grok_tool_output(v), error });
+    }
+    out
+}
+
+fn grok_tool_update(v: &Value) -> Vec<Ev> {
+    let id = s(&v["toolCallId"]);
+    let status = s(&v["status"]);
+    match grok_done(&status) {
+        Some(error) => vec![Ev::ToolEnd { id, output: grok_tool_output(v), error }],
+        None if !v["rawInput"].is_null() => vec![Ev::ToolUpdate { id, input: grok_input(&v["rawInput"]) }],
+        None => Vec::new(),
+    }
+}
+
+fn grok_tool_output(v: &Value) -> String {
+    if !v["rawOutput"].is_null() {
+        content_text(&v["rawOutput"])
+    } else {
+        content_text(&v["content"])
+    }
+}
+
+/// Ausgabe von `@vibe-kit/grok-cli` (nicht mehr installiert; alte Protokolle bleiben lesbar).
+fn grok_legacy(v: &Value) -> Vec<Ev> {
     let mut out = Vec::new();
     match v["role"].as_str().unwrap_or("") {
         "assistant" => {
@@ -574,7 +718,7 @@ pub fn describe(name: &str, input: &Value, workdirs: &[String]) -> (String, Stri
             let content = field(&["content", "contents", "file_text"]);
             ("write", path.clone(), "Write", diffs(vec![(String::new(), content)]))
         }
-        "edit" | "replace" | "str_replace_editor" | "str_replace" | "notebookedit" | "edit_file" => {
+        "edit" | "replace" | "str_replace_editor" | "str_replace" | "notebookedit" | "edit_file" | "search_replace" => {
             let before = field(&["old_string", "oldString", "old_str", "old_text"]);
             let after = field(&["new_string", "newString", "new_str", "new_text", "new_source"]);
             ("edit", path.clone(), "Edit", diffs(vec![(before, after)]))
@@ -603,7 +747,7 @@ pub fn describe(name: &str, input: &Value, workdirs: &[String]) -> (String, Stri
             let t = if files.is_empty() { path.clone() } else { files.join(", ") };
             ("edit", t, "Edit", Vec::new())
         }
-        "bash" | "run_shell_command" | "shell" | "command_execution" | "exec_command" | "bashoutput" | "killshell" => {
+        "bash" | "run_shell_command" | "shell" | "command_execution" | "exec_command" | "bashoutput" | "killshell" | "run_terminal_cmd" => {
             let cmd = field(&["command", "cmd"]);
             // Codex: "bash -lc '…'" → nur der eigentliche Befehl
             let cmd = cmd
@@ -615,7 +759,7 @@ pub fn describe(name: &str, input: &Value, workdirs: &[String]) -> (String, Stri
             let first = cmd.lines().next().unwrap_or("").to_string();
             ("command", trunc(&first, 120), "Run", Vec::new())
         }
-        "grep" | "search_file_content" | "glob" | "search" | "find" | "list" | "ls" | "list_directory" | "codebase_search" => {
+        "grep" | "search_file_content" | "glob" | "search" | "find" | "list" | "ls" | "list_directory" | "list_dir" | "codebase_search" => {
             let pat = field(&["pattern", "query", "regex", "glob"]);
             let t = if pat.is_empty() { path.clone() } else { pat };
             ("search", trunc(&t, 120), "Search", Vec::new())
@@ -721,5 +865,32 @@ mod tests {
         let (k, t, _, _) = describe("nrzgit_whoami", &json!({}), &w);
         assert_eq!((k.as_str(), t.as_str()), ("mcp", "nrzgit · whoami"));
         assert_eq!(strip_ansi("\x1b[31mrot\x1b[0m"), "rot");
+    }
+
+    #[test]
+    fn grok_streaming_json() {
+        let mut p = Parser::new(AgentKind::Grok);
+        assert!(p.line(r#"{"type":"thought","data":"Erst "}"#).is_empty());
+        assert!(p.line(r#"{"type":"thought","data":"schauen."}"#).is_empty());
+        let ev = p.line(r#"{"type":"text","data":"Hallo"}"#);
+        assert_eq!(ev[0], Ev::Thinking("Erst schauen.".into()));
+        assert_eq!(ev[1], Ev::TextDelta("Hallo".into()));
+        let ev = p.line(r#"{"type":"tool_call","toolCallId":"call_1","toolName":"read_file","status":"in_progress","rawInput":{"path":"src/main.rs"}}"#);
+        assert_eq!(ev[0], Ev::CloseText);
+        assert!(matches!(&ev[1], Ev::ToolStart { id, name, .. } if id == "call_1" && name == "read_file"));
+        let ev = p.line(r#"{"type":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{"text":"ok"}}"#);
+        assert_eq!(ev, vec![Ev::ToolEnd { id: "call_1".into(), output: "ok".into(), error: false }]);
+        let ev = p.line(r#"{"type":"usage","messageId":"resp_1","usage":{"input_tokens":10,"cache_read_input_tokens":4,"output_tokens":3,"reasoning_tokens":1}}"#);
+        assert_eq!(ev, vec![Ev::UsageLive { id: "resp_1".into(), input: 14, output: 4, cache_read: 4, cache_write: 0 }]);
+        let ev = p.line(r#"{"type":"end","stopReason":"end_turn","sessionId":"abc","usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":2,"output_tokens":3,"reasoning_tokens":1},"total_cost_usd":0.02}"#);
+        assert_eq!(ev[0], Ev::CloseText);
+        assert!(ev.contains(&Ev::Session("abc".into())));
+        assert!(ev.contains(&Ev::UsageTotal { input: 16, output: 4, cost: 0.02, cache_read: 4, cache_write: 2, reasoning: 1 }));
+        assert!(ev.contains(&Ev::Result { error: false, text: String::new() }));
+        assert_eq!(p.line(r#"{"type":"error","message":"weg"}"#), vec![Ev::Error("weg".into())]);
+        // Altes CLI
+        let mut old = Parser::new(AgentKind::Grok);
+        let ev = old.line(r#"{"role":"assistant","content":"Error: Live search is deprecated"}"#);
+        assert_eq!(ev, vec![Ev::Error("Live search is deprecated".into())]);
     }
 }
