@@ -1776,10 +1776,8 @@ async fn invocation(state: &AppState, ctx: &Ctx<'_>) -> AppResult<Invocation> {
             if !ctx.hint.is_empty() && ctx.hint.len() <= 80_000 {
                 args.extend(["--rules".into(), ctx.hint.clone()]);
             }
-            args.extend(["--add-dir".into(), ctx.rundir.to_string_lossy().into_owned()]);
-            for r in ctx.refs {
-                args.extend(["--add-dir".into(), r.path.to_string_lossy().into_owned()]);
-            }
+            // Grok lehnt additionalDirectories ab: eine Sitzung gilt nur für --cwd.
+            // Weitere Ordner stehen im Prompt; die Datei selbst liest --prompt-file.
             let prompt_path = ctx.rundir.join("prompt.txt");
             let with_hint = ctx.hint.len() > 80_000;
             tokio::fs::write(&prompt_path, full_prompt(ctx, with_hint, &all_paths)).await?;
